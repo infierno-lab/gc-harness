@@ -1,0 +1,371 @@
+# Golden-ask corpus (spec §9 Evals / §12 PoC scope "golden-ask suite (~30)").
+#
+# Every entry: {id, text, expect, plan_expect?}
+#   expect:
+#     task_type            — exact NormalizedAsk.task_type match (omit for out_of_domain entries)
+#     out_of_domain: true   — accepts task_type "unknown" OR confidence < 0.5 (used instead of task_type)
+#     stage                — "rules" | "llm", when the classifier ladder stage is pinned
+#     entities              — subset of Entities fields to assert (brand/platform/window/
+#                             price_delta_pct/budget/metric); a null asserts that field IS None
+#     ambiguities_contains  — substrings (case-insensitive) that must each appear in some
+#                             ambiguity string
+#     min_confidence        — floor on NormalizedAsk.confidence
+#   plan_expect (only for asks whose plan family is deterministic given the catalog):
+#     valid  — expected ValidationResult.valid
+#     blocks — expected block *names* (version stripped) in topo order
+
+- id: stage0_run_elasticity_pipeline
+  text: "Run elasticity for demo on blinkit for Jan-Jun 2026"
+  expect:
+    task_type: pipeline
+    stage: rules
+    entities:
+      brand: demo
+      platform: blinkit
+      window: {from: "2026-01", to: "2026-06"}
+  plan_expect:
+    valid: true
+    blocks: [panel_builder, elasticity_dml, post_model_checks]
+
+- id: stage0_run_elasticity_zepto_h1
+  text: "Run elasticity for demo on zepto for H1 2026"
+  expect:
+    task_type: pipeline
+    stage: rules
+    entities:
+      brand: demo
+      platform: zepto
+      window: {from: "2026-01", to: "2026-06"}
+
+- id: stage0_how_many_losses_last_quarter
+  text: "How many SKUs made losses last quarter?"
+  expect:
+    task_type: analytic_query
+    stage: rules
+    entities:
+      metric: loss_making_skus
+      window: {from: "2026-04", to: "2026-06"}
+
+- id: stage0_how_many_losses_demo_blinkit
+  text: "How many SKUs made losses last quarter for demo on blinkit?"
+  expect:
+    task_type: analytic_query
+    stage: rules
+    entities:
+      metric: loss_making_skus
+      brand: demo
+      platform: blinkit
+      window: {from: "2026-04", to: "2026-06"}
+  plan_expect:
+    valid: true
+    blocks: [loss_making_skus]
+
+- id: stage0_show_recent_runs
+  text: "show recent runs"
+  expect:
+    task_type: ops_status
+    stage: rules
+
+- id: stage0_show_me_recent_runs
+  text: "show me recent runs"
+  expect:
+    task_type: ops_status
+    stage: rules
+
+- id: stage0_show_recent_runs_please
+  text: "show recent runs please"
+  expect:
+    task_type: ops_status
+    stage: rules
+
+- id: paraphrase_pipeline_zepto_q1
+  text: "Please compute elasticity for demo across Zepto for Q1 2026"
+  expect:
+    task_type: pipeline
+    stage: llm
+    entities:
+      brand: demo
+      platform: zepto
+      window: {from: "2026-01", to: "2026-03"}
+    min_confidence: 0.5
+
+- id: paraphrase_pipeline_iso_range
+  text: "Kick off an elasticity run for Blinkit covering demo, 2026-01 to 2026-06"
+  expect:
+    task_type: pipeline
+    stage: llm
+    entities:
+      brand: demo
+      platform: blinkit
+      window: {from: "2026-01", to: "2026-06"}
+    min_confidence: 0.5
+
+- id: paraphrase_pipeline_month_range
+  text: "Run the elasticity numbers for demo on Blinkit for March to May"
+  expect:
+    task_type: pipeline
+    stage: llm
+    entities:
+      brand: demo
+      platform: blinkit
+      window: {from: "2026-03", to: "2026-05"}
+    min_confidence: 0.5
+
+# --- brand-extraction regression: "the demo brand" / "our demo brand" / "for demo" ---
+
+- id: regression_brand_the_demo_brand
+  text: "What happens to our volumes if we make everything 10% cheaper on blinkit for the demo brand?"
+  expect:
+    task_type: scenario
+    stage: llm
+    entities:
+      brand: demo
+      platform: blinkit
+      price_delta_pct: -0.1
+    min_confidence: 0.5
+
+- id: regression_brand_our_demo_brand
+  text: "If we cut prices 15% on Blinkit for our demo brand, what's the volume impact?"
+  expect:
+    task_type: scenario
+    stage: llm
+    entities:
+      brand: demo
+      platform: blinkit
+      price_delta_pct: -0.15
+    min_confidence: 0.5
+
+- id: regression_brand_for_demo
+  text: "Show the volume impact of a 20% price hike on Swiggy for demo."
+  expect:
+    task_type: scenario
+    stage: llm
+    entities:
+      brand: demo
+      platform: swiggy
+      price_delta_pct: 0.2
+    min_confidence: 0.5
+
+# --- scenario asks (price deltas, % and word forms) ---
+
+- id: scenario_cut_discounts_top20_blinkit
+  text: "How much volume do we lose if we cut discounts 10% on our top-20 SKUs on Blinkit?"
+  expect:
+    task_type: scenario
+    stage: llm
+    entities:
+      platform: blinkit
+      price_delta_pct: -0.1
+    min_confidence: 0.5
+
+- id: scenario_raise_prices_demo_zepto
+  text: "What if we raise prices 5% for the demo brand on Zepto?"
+  expect:
+    task_type: scenario
+    stage: llm
+    entities:
+      brand: demo
+      platform: zepto
+      price_delta_pct: 0.05
+    min_confidence: 0.5
+
+- id: scenario_word_form_increase
+  text: "What if we increase prices 12% on Zepto for demo?"
+  expect:
+    task_type: scenario
+    stage: llm
+    entities:
+      brand: demo
+      platform: zepto
+      price_delta_pct: 0.12
+    min_confidence: 0.5
+
+- id: scenario_word_form_reduce
+  text: "How would sales change if we reduce prices 6% on Blinkit for demo?"
+  expect:
+    task_type: scenario
+    stage: llm
+    entities:
+      brand: demo
+      platform: blinkit
+      price_delta_pct: -0.06
+    min_confidence: 0.5
+
+# --- optimizer asks (budgets) ---
+
+- id: optimizer_promo_budget_zepto_demo
+  text: "Build a promo plan with a budget of 5000 on Zepto for demo brand next month."
+  expect:
+    task_type: optimization
+    stage: llm
+    entities:
+      brand: demo
+      platform: zepto
+      budget: 5000
+    ambiguities_contains: ["next month"]
+    min_confidence: 0.5
+
+- id: optimizer_budget_swiggy_demo
+  text: "Optimize a 3000 budget across SKUs on Swiggy for demo"
+  expect:
+    task_type: optimization
+    stage: llm
+    entities:
+      brand: demo
+      platform: swiggy
+      budget: 3000
+    min_confidence: 0.5
+
+- id: optimizer_budget_blinkit_demo_h2
+  text: "Set up a promo budget of 8000 on Blinkit for demo brand for H2 2026"
+  expect:
+    task_type: optimization
+    stage: llm
+    entities:
+      brand: demo
+      platform: blinkit
+      budget: 8000
+      window: {from: "2026-07", to: "2026-12"}
+    min_confidence: 0.5
+
+# --- analytic asks ---
+
+- id: analytic_loss_skus_zepto_paraphrase
+  text: "Can you tell me the number of loss-making SKUs on Zepto for Q2 2026?"
+  expect:
+    task_type: analytic_query
+    stage: llm
+    entities:
+      platform: zepto
+      metric: loss_making_skus
+      window: {from: "2026-04", to: "2026-06"}
+    min_confidence: 0.5
+
+- id: analytic_loss_skus_generic
+  text: "What's our loss-making SKU count right now?"
+  expect:
+    task_type: analytic_query
+    stage: llm
+    entities:
+      metric: loss_making_skus
+    min_confidence: 0.4
+
+# --- ops asks ---
+
+- id: ops_paraphrase_recent_pipeline_runs
+  text: "Can you show me the most recent pipeline runs?"
+  expect:
+    task_type: ops_status
+    stage: llm
+    min_confidence: 0.5
+
+- id: ops_paraphrase_runs_recently
+  text: "What runs happened recently for our tenant?"
+  expect:
+    task_type: ops_status
+    stage: llm
+    min_confidence: 0.4
+
+# --- compound-intent regression: extra directive tacked onto a stage-0 shape ---
+#
+# LIVE BUG (confirmed via the API): the old, unanchored "run elasticity" rule
+# swallowed this ask into the plain pipeline shape, dropping "...and promote
+# the model to champion" -- normalized_hash then collided with the plain
+# elasticity ask, cross-binding the plan-template cache. Anchoring stage-0
+# end-to-end (core/classify/rules.py) sends this correctly to stage 2.
+
+- id: regression_compound_elasticity_and_promote
+  text: "run elasticity for demo on blinkit for Jan to Feb and promote the model to champion"
+  expect:
+    task_type: pipeline
+    stage: llm
+    entities:
+      brand: demo
+      platform: blinkit
+      window: {from: "2026-01", to: "2026-02"}
+    min_confidence: 0.5
+  # valid: false is the CORRECT, deterministic outcome here (not flaky) --
+  # promote_model is mutate_state, so validate_plan's sideeffect_policy check
+  # fires unconditionally at plan time (plan_ask never holds an approver
+  # role; that's the two-person approval flow, downstream). What matters,
+  # and what was verified across 3 independent live planning calls before
+  # adding this, is that promote_model is reliably present in the composed
+  # plan -- the planner's intent-coverage guard (core/plan/planner.py) fails
+  # the ask honestly (intent_unserved) if it ever isn't.
+  plan_expect:
+    valid: false
+    blocks: [panel_builder, elasticity_dml, post_model_checks, promote_model]
+
+# --- ambiguous asks (named but unresolvable brand/platform -> code-level ambiguities) ---
+
+- id: ambiguous_unknown_brand_platform_pipeline
+  text: "Please compute elasticity for nivea on bigbasket"
+  expect:
+    stage: llm
+    entities:
+      brand: null
+      platform: null
+    ambiguities_contains: ["nivea", "bigbasket"]
+
+- id: ambiguous_unknown_brand_platform_scenario
+  text: "What's the price elasticity impact for nivea if we cut prices 10% on bigbasket?"
+  expect:
+    stage: llm
+    entities:
+      brand: null
+      platform: null
+      price_delta_pct: -0.1
+    ambiguities_contains: ["nivea", "bigbasket"]
+
+- id: ambiguous_unknown_platform_only
+  text: "What's the elasticity trend for demo on Grofers?"
+  expect:
+    stage: llm
+    entities:
+      brand: demo
+      platform: null
+    ambiguities_contains: ["grofers"]
+
+# --- out-of-domain asks ---
+#
+# Graceful out-of-domain handling: the stage-2 LLM answers domain: null for a
+# genuinely off-topic ask (now a nullable schema field); the classifier maps
+# that deterministically to task_type="unknown", confidence 0.0, and an
+# ambiguity explaining why — never a raised GatewayError, and the planner
+# (core/plan/planner.py) short-circuits before spending an LLM call on it
+# (checked via `plan_skip_check` below, which asserts the gateway is never
+# touched).
+
+- id: ood_weather
+  text: "What's the weather like in Mumbai today?"
+  expect:
+    task_type: unknown
+    stage: llm
+    entities:
+      brand: null
+      platform: null
+      window: null
+      price_delta_pct: null
+      budget: null
+      metric: null
+    max_confidence: 0.3
+    ambiguities_contains: ["Demand Intelligence"]
+  plan_skip_check: true
+
+- id: ood_poem
+  text: "Can you write me a poem about SKUs?"
+  expect:
+    task_type: unknown
+    stage: llm
+    max_confidence: 0.3
+    ambiguities_contains: ["Demand Intelligence"]
+  plan_skip_check: true
+
+- id: ood_flight
+  text: "Book a flight to Singapore for next week."
+  expect:
+    task_type: unknown
+    stage: llm
+    max_confidence: 0.3
+    ambiguities_contains: ["Demand Intelligence"]
+  plan_skip_check: true

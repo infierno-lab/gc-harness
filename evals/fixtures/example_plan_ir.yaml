@@ -1,0 +1,9 @@
+plan_ir_version: 1
+intent_summary: "DML elasticity demo/blinkit Jan–Jun 2026, gated, no promotion"
+nodes:
+  - {id: n1, block: panel_builder@2.3, params: {brand: demo, platform: blinkit, window: {from: 2026-01, to: 2026-06}}}
+  - {id: n2, block: elasticity_dml@1.4, inputs: {panel: n1.panel}}
+  - {id: n3, block: post_model_checks@1.1, inputs: {surface: n2.surface}, gate: {policy: block}}
+outputs: {surface: n2.surface}
+assumptions: ["read-only run; champion untouched"]
+estimated_cost: {class: minutes}
