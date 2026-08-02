@@ -1,0 +1,39 @@
+[project]
+name = "gc-intelligence"
+version = "0.1.0"
+description = "GobbleCube Core Intelligence — plan-then-execute intelligence harness"
+readme = "docs/intelligence-harness/README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.9",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "pyyaml>=6.0",
+    "fastapi>=0.115",
+    "jsonschema>=4.26.0",
+    "anthropic>=0.120.2",
+    "uvicorn>=0.52.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*", "packs*", "evals*"]
+
+[tool.pytest.ini_options]
+testpaths = ["evals"]
+markers = [
+    "live: makes a real network/subprocess call to an LLM (deselected by default; run with `pytest -m live`)",
+    "live_record: refreshes evals/fixtures/golden_recordings.json against the real LLM transport (deselected by default; run with `pytest -m live_record`)",
+]
+addopts = "-m \"not live and not live_record\""

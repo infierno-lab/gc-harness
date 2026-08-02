@@ -1,0 +1,24 @@
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+.env
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Postgres data volume (compose named volume is separate, but guard local bind mounts)
+*.pgdata/
+
+# In-process runner scratch space (per-run node output artifacts)
+.gc_runs/

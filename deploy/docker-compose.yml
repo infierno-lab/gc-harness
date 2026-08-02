@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: gc-intel-postgres
+    restart: unless-stopped
+    # Mapped to 5433 (not 5432) to avoid clashing with a local Postgres install.
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: gc_intel
+      POSTGRES_USER: gc_intel
+      POSTGRES_PASSWORD: gc_intel
+    volumes:
+      - gc_intel_pgdata:/var/lib/postgresql/data
+      - ./init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gc_intel -d gc_intel"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  gc_intel_pgdata:
