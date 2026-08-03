@@ -49,6 +49,7 @@ _TIER_DEFAULTS: dict[Tier, str] = {
 _CALL_CLASS_TIERS: dict[str, Tier] = {
     "classify": "light",
     "plan": "standard",
+    "chat": "light",
     "escalate": "heavy",
 }
 

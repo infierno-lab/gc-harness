@@ -357,6 +357,13 @@ INDEX_HTML = """<!DOCTYPE html>
   }
 
   function renderNormalize(stage) {
+    if (!stage || stage.skipped) {
+      var reason = (stage && stage.reason) || "skipped";
+      return (
+        '<div class="stage-head"><span class="stage-label">Normalize</span><span class="badge">skipped</span></div>' +
+        '<div style="color: var(--muted); font-size: 13px;">' + escapeHtml(reason) + '</div>'
+      );
+    }
     var r = stage.result || {};
     var entities = r.entities || {};
     var pills = Object.keys(entities).map(function (k) {
@@ -384,6 +391,12 @@ INDEX_HTML = """<!DOCTYPE html>
   }
 
   function renderPlan(stage) {
+    if (!stage) {
+      return (
+        '<div class="stage-head"><span class="stage-label">Plan</span><span class="badge">skipped</span></div>' +
+        '<div style="color: var(--muted); font-size: 13px;">No plan stage for this ask.</div>'
+      );
+    }
     var isCache = stage.source === "template_cache";
     var banner = isCache
       ? '<div class="cache-banner">&#9889; template cache &mdash; zero LLM tokens</div>'
@@ -400,6 +413,12 @@ INDEX_HTML = """<!DOCTYPE html>
   }
 
   function renderValidate(stage) {
+    if (!stage) {
+      return (
+        '<div class="stage-head"><span class="stage-label">Validate</span><span class="badge">skipped</span></div>' +
+        '<div style="color: var(--muted); font-size: 13px;">No validation stage for this ask.</div>'
+      );
+    }
     var items;
     if (stage.valid) {
       items = '<li class="check-item"><span class="check-dot ok"></span> all checks passed</li>';
@@ -426,7 +445,7 @@ INDEX_HTML = """<!DOCTYPE html>
     if (!stage) {
       return (
         '<div class="stage-head"><span class="stage-label">Execute</span><span class="badge">skipped</span></div>' +
-        '<div style="color: var(--muted); font-size: 13px;">No run — the plan did not pass validation, fail-closed by design.</div>'
+        '<div style="color: var(--muted); font-size: 13px;">No execution — this ask did not result in a valid, executable plan.</div>'
       );
     }
     var verdictsByNode = {};
@@ -470,17 +489,30 @@ INDEX_HTML = """<!DOCTYPE html>
   }
 
   function renderAnswer(stage, validateStage, approvalStage) {
-    var pending = approvalStage && approvalStage.required;
-    var rejected = !pending && validateStage && !validateStage.valid;
-    var badgeClass = pending ? "badge-warn" : (rejected ? "badge-fail" : "badge-pass");
-    var badgeText = pending ? "PENDING APPROVAL" : (rejected ? "REJECTED — FAIL-CLOSED" : "OK");
+    var conversational = !!stage.conversational;
+    var pending = !conversational && approvalStage && approvalStage.required;
+    var rejected = !conversational && !pending && validateStage && !validateStage.valid;
+    var badgeClass = conversational ? "badge-accent" : pending ? "badge-warn" : (rejected ? "badge-fail" : "badge-pass");
+    var badgeText = conversational
+      ? "💬 CONVERSATIONAL — NOT A DATA ANSWER"
+      : pending ? "PENDING APPROVAL" : (rejected ? "REJECTED — FAIL-CLOSED" : "OK");
+    var suggestedHtml = "";
+    if (conversational && stage.suggested_asks && stage.suggested_asks.length) {
+      suggestedHtml = '<div class="chips">' + stage.suggested_asks.map(function (ask) {
+        return '<button type="button" class="chip suggested-ask-chip" data-ask="' + escapeHtml(ask) + '">' +
+          escapeHtml(ask) + '</button>';
+      }).join("") + '</div>';
+    }
     return (
       '<div class="stage-head"><span class="stage-label">Answer</span>' +
         '<span class="badge ' + badgeClass + '">' + badgeText + '</span>' +
       '</div>' +
       '<div class="answer-box' + (rejected ? " rejected" : "") + '">' +
         '<p class="answer-text">' + escapeHtml(stage.text) + '</p>' +
-        '<div class="provenance">' + escapeHtml(JSON.stringify(stage.numbers_provenance || {}, null, 2)) + '</div>' +
+        (conversational
+          ? ""
+          : '<div class="provenance">' + escapeHtml(JSON.stringify(stage.numbers_provenance || {}, null, 2)) + '</div>') +
+        suggestedHtml +
       '</div>'
     );
   }
@@ -577,6 +609,15 @@ INDEX_HTML = """<!DOCTYPE html>
     row.querySelector(".reject-btn").addEventListener("click", function () { decide("reject"); });
   }
 
+  function attachSuggestedAskHandler(el) {
+    el.querySelectorAll(".suggested-ask-chip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        $input.value = chip.getAttribute("data-ask");
+        $input.focus();
+      });
+    });
+  }
+
   function attachLedgerHandler(el) {
     var btn = el.querySelector(".ledger-link");
     if (!btn) return;
@@ -616,6 +657,7 @@ INDEX_HTML = """<!DOCTYPE html>
       $timeline.appendChild(el);
       attachLedgerHandler(el);
       attachApprovalHandler(el);
+      attachSuggestedAskHandler(el);
       setTimeout(function () {
         el.classList.add("in");
       }, i * 150);

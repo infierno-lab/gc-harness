@@ -20,17 +20,18 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from core.api.answers import compose_answer
 from core.api.approvals import classify_approval_need, decide_approval, open_approval, pending_approval_answer
+from core.api.chat import capability_answer, chat_answer, is_capability_question
 from core.api.ui import INDEX_HTML
+from core.catalog.digest import render_digest
 from core.catalog.seed import apply_seed, grant_all_blocks
 from core.db.models import Approval, Ask, AuditEvent, GateVerdict, LlmCall, NodeExecution, Run, Tenant
 from core.db.session import admin_session, tenant_session
@@ -107,6 +108,7 @@ _DEGRADED_MESSAGES = {
     "classify": "The classifier didn't respond in time for this ask. Your ask was recorded — please retry.",
     "plan": "The planner didn't respond in time for this novel ask. Your ask was recorded — please retry; "
     "repeat asks of known shapes are unaffected.",
+    "chat": "I didn't respond in time. Your message was recorded — please retry.",
 }
 
 
@@ -137,14 +139,76 @@ def _record_degraded_ask(session: Any, tenant_id: uuid.UUID, actor: str, raw_tex
     )
 
 
+def _record_chat_ask(session: Any, tenant_id: uuid.UUID, actor: str, raw_text: str, *, rung: str) -> None:
+    """Chat asks never flow through execute_plan/open_approval (no plan is
+    ever composed for them), so nothing else would persist an Ask row for
+    one — recorded here, audited as `ask.chat` (spec: "narrate" is a
+    sanctioned but observable LLM job, same as normalize/propose)."""
+    ask_row = Ask(tenant_id=tenant_id, actor=actor, raw_text=raw_text, task_type="unknown")
+    session.add(ask_row)
+    session.flush()
+    session.add(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor=actor,
+            action="ask.chat",
+            subject=str(ask_row.id),
+            details={"rung": rung},
+        )
+    )
+
+
 @app.post("/api/asks")
 def create_ask(payload: AskRequest) -> dict[str, Any]:
     tenant_id = app.state.demo_tenant_id
     actor = payload.actor
-    request_started_at = datetime.now(UTC)
     wall_clock_start = time.perf_counter()
 
     with tenant_session(tenant_id) as session:
+        # `now()` (not `clock_timestamp()`) on purpose: Postgres freezes
+        # `now()`/`transaction_timestamp()` at the *start* of the current
+        # transaction, and that's exactly what `llm_call.created_at`'s
+        # `server_default=now()` resolves to for every row this transaction
+        # inserts — so this read is guaranteed <= every row's `created_at`
+        # below, transaction-frozen consistently on both sides. Comparing
+        # against an app-clock `datetime.now()` (the previous approach) or
+        # `clock_timestamp()` (real, per-statement time — tried and observed
+        # to fail intermittently) is a cross-clock/frozen-vs-advancing race:
+        # either can end up a hair after this transaction's own inserts.
+        request_started_at = session.execute(select(func.now())).scalar()
+
+        if is_capability_question(payload.text):
+            # Rung 0 (spec §1 "narrate"): deterministic, zero LLM calls —
+            # checked *before* classify_ask is even loaded, not after, so a
+            # capability question never costs a classify call finding out
+            # it's task_type=unknown. One detection point, here.
+            _record_chat_ask(session, tenant_id, actor, payload.text, rung="capability")
+            answer = capability_answer(render_digest(session, tenant_id))
+            stages: dict[str, Any] = {
+                "normalize": {"skipped": True, "reason": "capability question — routed before classify"},
+                "plan": None,
+                "validate": None,
+                "execute": None,
+                "approval": None,
+                "answer": answer,
+            }
+            llm_calls = (
+                session.query(LlmCall)
+                .filter(LlmCall.tenant_id == tenant_id, LlmCall.created_at >= request_started_at)
+                .all()
+            )
+            llm_tally = {
+                "calls": len(llm_calls),
+                "input_tokens": sum(call.input_tokens or 0 for call in llm_calls),
+                "output_tokens": sum(call.output_tokens or 0 for call in llm_calls),
+            }
+            return {
+                "ask_text": payload.text,
+                "stages": stages,
+                "llm": llm_tally,
+                "total_latency_ms": int((time.perf_counter() - wall_clock_start) * 1000),
+            }
+
         classify_ask = _load_classify_ask()
         classify_t0 = time.perf_counter()
         try:
@@ -175,6 +239,43 @@ def create_ask(payload: AskRequest) -> dict[str, Any]:
                     "latency_ms": classify_latency_ms,
                 }
             }
+
+            if classify_result.normalized.task_type == "unknown":
+                # Out-of-domain/unmatched ask (spec §1 "narrate" — the third
+                # sanctioned LLM job): never a plan, never execution. The
+                # capability-question rung already ran (or didn't apply)
+                # before classify_ask was even called above — this is the
+                # grounded chat lane (rung 1), which degrades exactly like a
+                # classify/plan timeout on GatewayError.
+                try:
+                    digest = render_digest(session, tenant_id)
+                    answer = chat_answer(session, tenant_id, payload.text, digest.text)
+                except GatewayError as exc:
+                    _record_degraded_ask(session, tenant_id, actor, payload.text, stage="chat", error=exc)
+                    answer = _degraded_answer("chat", exc)
+                else:
+                    _record_chat_ask(session, tenant_id, actor, payload.text, rung="llm")
+                stages["plan"] = None
+                stages["validate"] = None
+                stages["execute"] = None
+                stages["approval"] = None
+                stages["answer"] = answer
+                llm_calls = (
+                    session.query(LlmCall)
+                    .filter(LlmCall.tenant_id == tenant_id, LlmCall.created_at >= request_started_at)
+                    .all()
+                )
+                llm_tally = {
+                    "calls": len(llm_calls),
+                    "input_tokens": sum(call.input_tokens or 0 for call in llm_calls),
+                    "output_tokens": sum(call.output_tokens or 0 for call in llm_calls),
+                }
+                return {
+                    "ask_text": payload.text,
+                    "stages": stages,
+                    "llm": llm_tally,
+                    "total_latency_ms": int((time.perf_counter() - wall_clock_start) * 1000),
+                }
 
             plan_ask = _load_plan_ask()
             try:

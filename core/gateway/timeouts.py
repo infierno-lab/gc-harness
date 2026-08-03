@@ -7,6 +7,7 @@ class lets each degrade at its own natural latency instead.
 
   classify -> GC_LLM_TIMEOUT_CLASSIFY (default 30s)
   plan     -> GC_LLM_TIMEOUT_PLAN     (default 120s)
+  chat     -> GC_LLM_TIMEOUT_CHAT     (default 60s)
 
 Anything unlisted falls back to the classify default (the repo-wide
 constant this replaces) — the safest, shortest prior behavior.
@@ -19,11 +20,13 @@ _DEFAULT_TIMEOUT_S = 30.0
 _CALL_CLASS_ENV_VARS: dict[str, str] = {
     "classify": "GC_LLM_TIMEOUT_CLASSIFY",
     "plan": "GC_LLM_TIMEOUT_PLAN",
+    "chat": "GC_LLM_TIMEOUT_CHAT",
 }
 
 _CALL_CLASS_DEFAULTS: dict[str, float] = {
     "classify": 30.0,
     "plan": 120.0,
+    "chat": 60.0,
 }
 
 

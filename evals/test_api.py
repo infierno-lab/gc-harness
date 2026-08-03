@@ -18,8 +18,12 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.api import app as api_app
+from core.api import chat as chat_module
 from core.catalog.seed import apply_seed
 from core.db.session import admin_session
+from core.gateway.client import Gateway
+from core.gateway.errors import GatewayError
+from core.gateway.transport import TransportResult
 from core.plan.plan_ir import PlanIR, parse_plan_yaml
 from core.plan.validator import ValidationError, ValidationResult, validate_plan
 from packs.demand.catalog_seed import BLOCKS, METRICS
@@ -192,7 +196,13 @@ def test_rejected_plan_renders_validator_errors_as_the_answer(
     assert body["stages"]["answer"]["numbers_provenance"]["validator_error_codes"] == ["not_granted"]
 
 
-def test_no_plan_produced_renders_a_clarifying_answer(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+def test_unknown_task_type_never_reaches_plan_ask_gets_conversational_answer_instead(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """Formerly asserted the old static "no plan could be composed" message
+    for an unrecognized ask; task_type=="unknown" now routes to the grounded
+    chat lane (spec §1 "narrate") *before* plan_ask is ever called — plan_ask
+    is never even loaded here (no `_load_plan_ask` monkeypatch needed)."""
     normalized = FakeNormalizedAsk(
         task_type="unknown", domain="demand", entities={}, ambiguities=["which brand?"]
     )
@@ -200,19 +210,19 @@ def test_no_plan_produced_renders_a_clarifying_answer(monkeypatch: pytest.Monkey
     def fake_classify_ask(session: Any, tenant_id: Any, text: str, *, reference_date: Any = None) -> FakeClassifyResult:
         return FakeClassifyResult(normalized)
 
-    def fake_plan_ask(session: Any, tenant_id: Any, classify: Any, raw_text: str) -> FakePlanOutcome:
-        return FakePlanOutcome(None, None)
+    transport = _CannedTransport('{"reply": "Happy to help — which brand did you mean?", "suggested_asks": []}')
 
     monkeypatch.setattr(api_app, "_load_classify_ask", lambda: fake_classify_ask)
-    monkeypatch.setattr(api_app, "_load_plan_ask", lambda: fake_plan_ask)
+    monkeypatch.setattr(chat_module, "get_gateway", lambda: Gateway(transport))
 
     resp = client.post("/api/asks", json={"text": "do something vague"})
     assert resp.status_code == 200
     body = resp.json()
 
-    assert body["stages"]["plan"]["ir"] is None
+    assert body["stages"]["plan"] is None
     assert body["stages"]["execute"] is None
-    assert "which brand?" in body["stages"]["answer"]["text"]
+    assert body["stages"]["answer"]["conversational"] is True
+    assert "which brand" in body["stages"]["answer"]["text"].lower()
 
 
 def test_index_returns_html(migrated_test_db: str) -> None:
@@ -309,4 +319,124 @@ def test_plan_timeout_degrades_to_200_with_audited_ask(monkeypatch: pytest.Monke
             .one()
         )
         assert audit.details["stage"] == "plan"
+        assert "timed out" in audit.details["error"]
+
+
+# --- chat lane routing for unknown/out-of-domain asks (spec §1 "narrate") --
+# task_type == "unknown" never reaches plan_ask/execute_plan at all; it's
+# routed to the deterministic capability rung or the grounded chat lane.
+
+
+class _PoisonTransport:
+    """Raises if ever called — proves a code path never reaches the gateway."""
+
+    def complete(self, prompt: str, *, model: str, max_tokens: int, timeout_s: float) -> TransportResult:
+        raise AssertionError("gateway must not be called on this path")
+
+
+class _CannedTransport:
+    """Always returns the same canned response, recording every prompt."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.calls: list[str] = []
+
+    def complete(self, prompt: str, *, model: str, max_tokens: int, timeout_s: float) -> TransportResult:
+        self.calls.append(prompt)
+        return TransportResult(text=self._text, input_tokens=1, output_tokens=1, cache_read_tokens=0, latency_ms=1)
+
+
+def _fake_unknown_classify_ask(session: Any, tenant_id: Any, text: str, *, reference_date: Any = None) -> FakeClassifyResult:
+    normalized = FakeNormalizedAsk(task_type="unknown", domain="", entities={}, confidence=0.0)
+    return FakeClassifyResult(normalized)
+
+
+def test_capability_question_returns_deterministic_answer_with_zero_llm_calls(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """Regression guard for the real bug this caught: `_load_classify_ask`
+    is deliberately left un-monkeypatched (the real classifier loads) — the
+    only thing standing between a capability question and two wasted LLM
+    calls is that the rung-0 check runs *before* classify_ask is ever
+    invoked. Poisoning the gateway for both the classifier and the chat
+    lane proves neither is reached at all, not just that a fake stood in."""
+    import core.classify.classifier as classifier_module
+
+    monkeypatch.setattr(classifier_module, "get_gateway", lambda: Gateway(_PoisonTransport()))
+    monkeypatch.setattr(chat_module, "get_gateway", lambda: Gateway(_PoisonTransport()))
+
+    resp = client.post("/api/asks", json={"text": "what can you do?", "actor": "alice"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["stages"]["normalize"]["skipped"] is True
+    assert body["stages"]["plan"] is None
+    assert body["stages"]["validate"] is None
+    assert body["stages"]["execute"] is None
+    assert body["stages"]["approval"] is None
+    answer = body["stages"]["answer"]
+    assert answer["conversational"] is True
+    assert len(answer["suggested_asks"]) == 3
+    assert body["llm"]["calls"] == 0
+
+
+def test_unknown_ask_invokes_chat_lane_with_conversational_trace(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    canned = (
+        '{"reply": "I compose and execute governed pipelines — ask me for a real ask shape.", '
+        '"suggested_asks": ["Run elasticity for demo brand on blinkit for Jan to Feb"]}'
+    )
+    transport = _CannedTransport(canned)
+
+    monkeypatch.setattr(api_app, "_load_classify_ask", lambda: _fake_unknown_classify_ask)
+    monkeypatch.setattr(chat_module, "get_gateway", lambda: Gateway(transport))
+
+    # deliberately doesn't match any capability-question phrasing, forcing rung 1
+    resp = client.post("/api/asks", json={"text": "who are you and what do you do", "actor": "alice"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["stages"]["plan"] is None
+    assert body["stages"]["validate"] is None
+    assert body["stages"]["execute"] is None
+    assert body["stages"]["approval"] is None
+    answer = body["stages"]["answer"]
+    assert answer["conversational"] is True
+    assert answer["text"] == "I compose and execute governed pipelines — ask me for a real ask shape."
+    assert answer["suggested_asks"] == ["Run elasticity for demo brand on blinkit for Jan to Feb"]
+    assert body["llm"]["calls"] == 1
+    assert len(transport.calls) == 1
+
+
+def test_chat_gateway_error_degrades_to_200_with_audited_ask(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    from core.db.models import Ask, AuditEvent
+    from core.db.session import tenant_session
+
+    def fake_chat_answer(session: Any, tenant_id: Any, text: str, digest_text: str) -> dict[str, Any]:
+        raise GatewayError("claude CLI timed out after 60.0s")
+
+    monkeypatch.setattr(api_app, "_load_classify_ask", lambda: _fake_unknown_classify_ask)
+    monkeypatch.setattr(api_app, "chat_answer", fake_chat_answer)
+
+    ask_text = f"an unmatched ask {uuid.uuid4()}"
+    resp = client.post("/api/asks", json={"text": ask_text, "actor": "carol"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["stages"]["plan"] is None
+    assert body["stages"]["validate"] is None
+    assert body["stages"]["execute"] is None
+    assert body["stages"]["approval"] is None
+    answer = body["stages"]["answer"]
+    assert answer.get("conversational") is not True
+    assert "timed out" not in answer["text"]  # the answer text is the static message, not the raw error
+    assert answer["numbers_provenance"]["degraded_stage"] == "chat"
+
+    with tenant_session(api_app.app.state.demo_tenant_id) as session:
+        ask_row = session.query(Ask).filter_by(actor="carol", raw_text=ask_text).one()
+        audit = session.query(AuditEvent).filter_by(subject=str(ask_row.id), action="ask.degraded").one()
+        assert audit.details["stage"] == "chat"
         assert "timed out" in audit.details["error"]
