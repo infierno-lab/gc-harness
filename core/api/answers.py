@@ -11,7 +11,7 @@ from typing import Any
 # classifier's task_type vocabulary (which isn't ours to assume), so this
 # stays correct regardless of exactly which strings the planner's task_type
 # ends up using.
-_ELASTICITY_BLOCKS = {"elasticity_dml"}
+_ELASTICITY_BLOCKS = {"elasticity_dml", "elasticity_real"}
 _PLAN_BLOCKS = {"scenario_projection", "promo_optimizer"}
 _METRIC_BLOCKS = {"loss_making_skus"}
 _OPS_BLOCKS = {"runs_history"}

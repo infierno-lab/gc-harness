@@ -117,6 +117,31 @@ _FEW_SHOT_ELASTICITY_AND_PROMOTE = {
     "estimated_cost": {"class": "seconds"},
 }
 
+_FEW_SHOT_REAL_ELASTICITY_AND_OPTIMIZE = {
+    "plan_ir_version": 1,
+    "intent_summary": "Real ds-models elasticity for gozero on blinkit, gated, then optimize a discount budget",
+    "nodes": [
+        {"id": "n1", "block": "elasticity_real@1.0", "params": {"brand": "gozero", "platform": "blinkit"}},
+        {
+            "id": "n2",
+            "block": "post_model_checks@1.0",
+            "inputs": {"surface": "n1.surface"},
+            "gate": {"policy": "block"},
+        },
+        {
+            "id": "n3",
+            "block": "promo_optimizer@1.0",
+            "inputs": {"surface": "n1.surface"},
+            "params": {"platform": "blinkit", "week": "2026-08-04", "budget": 50000},
+        },
+    ],
+    "outputs": {"surface": "n1.surface", "plan": "n3.plan"},
+    "assumptions": [
+        "brand has a real, already-fitted ds-models run — no panel_builder node; elasticity_real reads it directly"
+    ],
+    "estimated_cost": {"class": "seconds"},
+}
+
 _PLANNER_RULES = (
     "You are the planner for GobbleCube's Demand Intelligence system. Compose a Plan IR "
     "(a typed DAG of catalog blocks) that fulfills the ask below.\n"
@@ -138,7 +163,10 @@ def _render_planner_prompt(digest_text: str, classify: ClassifyResult, raw_text:
         f"Example (single-node analytic):\n{json.dumps(_FEW_SHOT_ANALYTIC, separators=(',', ':'))}\n\n"
         f"Example (pipeline + promotion — never drop the promote_model node just because it needs "
         f"approval; leave it in the plan, gated):\n"
-        f"{json.dumps(_FEW_SHOT_ELASTICITY_AND_PROMOTE, separators=(',', ':'))}"
+        f"{json.dumps(_FEW_SHOT_ELASTICITY_AND_PROMOTE, separators=(',', ':'))}\n\n"
+        f"Example (real ds-models brand — elasticity_real instead of panel_builder+elasticity_dml, then "
+        f"optimize):\n"
+        f"{json.dumps(_FEW_SHOT_REAL_ELASTICITY_AND_OPTIMIZE, separators=(',', ':'))}"
     )
     return (
         f"{_PLANNER_RULES}\n\n"
@@ -178,6 +206,25 @@ def _plan_kinds(session: Session, plan: PlanIR) -> set[str]:
         if block_version is not None:
             kinds.add(block_version.block.kind)
     return kinds
+
+
+_CACHE_SAFE_ERROR_CODES = {"sideeffect_policy"}
+
+
+def _cache_incompatible(validation: ValidationResult) -> bool:
+    """A bound cached template is only safe to serve as-is when its ONLY
+    validation errors are `sideeffect_policy` ones (a mutate-state node
+    correctly pending the two-person approval flow, spec §8 — the cached
+    plan still correctly represents the ask's intent, e.g. a repeat
+    "...and promote to champion" ask). Any other error code means the
+    cached SHAPE doesn't fit *this* ask's entity values — e.g. a brand that
+    has moved from the synthetic demo pipeline to a real ds-models brand (or
+    vice versa) binds into a block whose params_schema now rejects it (see
+    packs.demand.catalog_seed's panel_builder brand exclusion /
+    elasticity_real's brand enum) — and must fall through to a fresh LLM
+    plan rather than surface a confusing rejection for what looks like a
+    perfectly ordinary ask."""
+    return any(error.code not in _CACHE_SAFE_ERROR_CODES for error in validation.errors)
 
 
 def _missing_required_kinds(session: Session, plan: PlanIR, required_kinds: set[str]) -> set[str]:
@@ -361,22 +408,25 @@ def plan_ask(
     if template is not None:
         plan = bind_template(template.ir, classify.normalized.entities)
         validation = validate_plan(session, tenant_uuid, plan)
-        if not _missing_required_kinds(session, plan, required_kinds):
+        if not _missing_required_kinds(session, plan, required_kinds) and not _cache_incompatible(validation):
             template.hit_count += 1
             session.flush()
             latency_ms = int((time.monotonic() - start) * 1000)
             return PlanOutcome(
                 plan=plan, validation=validation, source="template_cache", attempts=0, latency_ms=latency_ms
             )
-        # A cached template can only ever have been stored while fully valid
-        # (below), which is impossible for any plan containing a mutate-class
-        # node (sideeffect_policy always fires without an approver role) — so
-        # a stored template NEVER covers a `promotion`-kind requirement, and
-        # `normalized_hash` separates compound asks only by constraint COUNT,
-        # not identity, so a different compound verb sharing the same shape
-        # could otherwise hit a template that structurally can't serve it.
-        # Treat this exactly like a cache miss (no hit_count bump) and fall
-        # through to plan fresh below, rather than silently under-serving.
+        # Two independent reasons to treat this exactly like a cache miss (no
+        # hit_count bump) and fall through to plan fresh below, rather than
+        # silently under-serving or surfacing a confusing rejection:
+        # (1) missing_required_kinds — a cached template can only ever have
+        # been stored while fully valid (below), which is impossible for any
+        # plan containing a mutate-class node (sideeffect_policy always fires
+        # without an approver role) — so a stored template NEVER covers a
+        # `promotion`-kind requirement, and `normalized_hash` separates
+        # compound asks only by constraint COUNT, not identity, so a
+        # different compound verb sharing the same shape could otherwise hit
+        # a template that structurally can't serve it.
+        # (2) _cache_incompatible — see its docstring.
 
     gateway = get_gateway()
     digest = render_digest(session, tenant_uuid)

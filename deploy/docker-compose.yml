@@ -19,5 +19,28 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: gc-intel-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    # Inside the compose network the app reaches Postgres by service name, not
+    # localhost:5433 — override whatever GC_DATABASE_URL/GC_ADMIN_DATABASE_URL
+    # the repo-root .env sets for host-side `uv run`.
+    environment:
+      GC_DATABASE_URL: postgresql+psycopg://gc_intel:gc_intel@postgres:5432/gc_intel
+      GC_ADMIN_DATABASE_URL: postgresql+psycopg://gc_intel:gc_intel@postgres:5432/gc_intel
+    env_file:
+      - ../.env
+    command: >
+      sh -c "uv run alembic upgrade head &&
+             uv run uvicorn core.api.app:app --host 0.0.0.0 --port 8080"
+
 volumes:
   gc_intel_pgdata:

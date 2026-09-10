@@ -23,7 +23,12 @@ BLOCKS: list[dict[str, Any]] = [
         "params_schema": {
             "type": "object",
             "properties": {
-                "brand": {"type": "string"},
+                "brand": {
+                    "type": "string",
+                    "not": {"enum": ["gozero", "haleon"]},
+                    "description": "The synthetic demo pipeline's own brand — never one with a real "
+                    "ds-models run (those use elasticity_real instead).",
+                },
                 "platform": {"type": "string"},
                 "window": {
                     "type": "object",
@@ -72,6 +77,41 @@ BLOCKS: list[dict[str, Any]] = [
         "when_not_to_use": "When an elasticity surface already exists for the same panel and is still fresh.",
         "status": "active",
         "consumes": [{"contract": "dml_panel@v1", "port": "panel"}],
+        "produces": [{"contract": "elasticity_surface@v1", "port": "surface"}],
+        "gates": [{"check_suite": "post_model_checks", "when": "post", "policy": "block"}],
+    },
+    {
+        "name": "elasticity_real",
+        "kind": "model",
+        "owner": OWNER,
+        "domain": DOMAIN,
+        "tags": ["demand", "elasticity", "ds-models", "real"],
+        "version": "1.0",
+        "git_sha": GIT_SHA,
+        "image_ref": None,
+        "entrypoint": "packs.demand.blocks.elasticity_real:run",
+        "params_schema": {
+            "type": "object",
+            "properties": {
+                "brand": {
+                    "type": "string",
+                    "enum": ["gozero", "haleon"],
+                    "description": "A brand with a real, already-fitted ds-models elasticity run.",
+                },
+                "platform": {"type": "string"},
+            },
+            "required": ["brand"],
+        },
+        "cost_class": "seconds",
+        "sideeffect_class": "read",
+        "when_to_use": "Real per-SKU price elasticity for a brand ds-models has actually modeled (gozero, "
+        "haleon) — the shipped DML/Bayesian-shrinkage/causal-forest/PSM-DiD-calibrated numbers. Prefer this "
+        "over elasticity_dml whenever the ask names one of these real brands; no panel_builder needed, the "
+        "model already ran inside ds-models.",
+        "when_not_to_use": "The synthetic 'demo' brand, or any brand with no shipped ds-models run — use "
+        "elasticity_dml (panel_builder -> elasticity_dml) for those instead.",
+        "status": "active",
+        "consumes": [],
         "produces": [{"contract": "elasticity_surface@v1", "port": "surface"}],
         "gates": [{"check_suite": "post_model_checks", "when": "post", "policy": "block"}],
     },

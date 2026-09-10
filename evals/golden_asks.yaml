@@ -296,6 +296,37 @@
     valid: false
     blocks: [panel_builder, elasticity_dml, post_model_checks, promote_model]
 
+# --- real ds-models brand asks: gozero, haleon have an actual shipped
+# ds-models run (packs/demand/data/real/), not the synthetic demo pipeline.
+# elasticity_real (not panel_builder+elasticity_dml) must be the block chosen.
+
+- id: real_haleon_elasticity
+  text: "Compute price elasticity for haleon on blinkit."
+  expect:
+    task_type: pipeline
+    stage: llm
+    entities:
+      brand: haleon
+      platform: blinkit
+    min_confidence: 0.5
+  plan_expect:
+    valid: true
+    blocks: [elasticity_real, post_model_checks]
+
+- id: real_gozero_elasticity_and_optimize
+  text: "What's the price elasticity for gozero on blinkit, and how should we allocate a 50000 discount budget across SKUs?"
+  expect:
+    task_type: optimization
+    stage: llm
+    entities:
+      brand: gozero
+      platform: blinkit
+      budget: 50000
+    min_confidence: 0.5
+  plan_expect:
+    valid: true
+    blocks: [elasticity_real, post_model_checks, promo_optimizer]
+
 # --- ambiguous asks (named but unresolvable brand/platform -> code-level ambiguities) ---
 
 - id: ambiguous_unknown_brand_platform_pipeline

@@ -22,3 +22,6 @@ __pycache__/
 
 # In-process runner scratch space (per-run node output artifacts)
 .gc_runs/
+
+# Real client data (never push to remote)
+packs/demand/data/real/

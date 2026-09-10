@@ -7,6 +7,7 @@ from typing import Any
 from core.execute.adapter import BlockContext, build_envelope
 from core.execute.envelope import Envelope
 from packs.demand.blocks._util import rng_for, seed_for, skus_for_brand, weeks_between
+from packs.demand.blocks.elasticity_real import REAL_BRANDS
 
 N_SKUS = 12
 
@@ -14,6 +15,15 @@ N_SKUS = 12
 def run(params: dict[str, Any], inputs: dict[str, Envelope], ctx: BlockContext) -> dict[str, Envelope]:
     brand = str(params["brand"])
     platform = str(params["platform"])
+    if brand.lower() in REAL_BRANDS:
+        # Fail loud, not silently-wrong (see elasticity_real.REAL_BRANDS): a
+        # stale/mis-bound template cache is the only legitimate way this
+        # branch is reached — every fresh plan_ask call routes a real brand to
+        # elasticity_real via the planner's few-shot instead.
+        raise ValueError(
+            f"brand {brand!r} has a real ds-models run — use elasticity_real, not the synthetic "
+            "panel_builder/elasticity_dml demo pipeline"
+        )
     window = params["window"]
     weeks = weeks_between(window["from"], window["to"])
     skus = skus_for_brand(brand, N_SKUS)

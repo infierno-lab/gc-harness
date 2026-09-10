@@ -14,7 +14,7 @@ from core.classify.schema import WindowSpec
 # dimension tables" — a single demo tenant with a fixed catalog stands in for
 # that here; unknown values fall through to `ambiguities`, never silently
 # guessed).
-KNOWN_BRANDS = {"demo"}
+KNOWN_BRANDS = {"demo", "gozero", "haleon"}
 KNOWN_PLATFORMS = {"blinkit", "zepto", "swiggy"}
 
 _MONTHS = {
